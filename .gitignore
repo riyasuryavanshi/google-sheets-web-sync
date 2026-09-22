@@ -1,0 +1,15 @@
+node-api/node_modules/
+frontend/node_modules/
+python-service/.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+credentials*.json
+service-account*.json
+*.pem
+.DS_Store
+dist/
+.vite/
+build/
