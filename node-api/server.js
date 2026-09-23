@@ -13,37 +13,100 @@ app.use(
     origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173",
   })
 );
+
 app.use(express.json());
 
 async function pythonRequest(path, options = {}) {
-  const response = await fetch(`${PYTHON_SERVICE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  const maxAttempts = 3;
+  const retryDelays = [1000, 2000, 4000];
 
-  const text = await response.text();
-  let body;
-  try {
-    body = text ? JSON.parse(text) : {};
-  } catch {
-    body = { detail: text };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+
+    // Prevent a request from hanging forever
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 20000);
+
+    try {
+      const response = await fetch(`${PYTHON_SERVICE_URL}${path}`, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      });
+
+      clearTimeout(timeout);
+
+      const text = await response.text();
+
+      let body;
+
+      try {
+        body = text ? JSON.parse(text) : {};
+      } catch {
+        body = { detail: text };
+      }
+
+      if (response.ok) {
+        return body;
+      }
+
+      const error = new Error(
+        body.detail ||
+          body.error ||
+          `Python service returned status ${response.status}`
+      );
+
+      error.status = response.status;
+
+      // Temporary errors can happen when the free Render service
+      // is waking up or restarting. Retry these automatically.
+      if (
+        [502, 503, 504, 429].includes(response.status) &&
+        attempt < maxAttempts
+      ) {
+        console.log(
+          `Python service returned ${response.status}. ` +
+            `Retrying (${attempt + 1}/${maxAttempts})...`
+        );
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, retryDelays[attempt - 1])
+        );
+
+        continue;
+      }
+
+      throw error;
+    } catch (error) {
+      clearTimeout(timeout);
+
+      // Retry network errors and timeout errors
+      if (attempt < maxAttempts) {
+        console.log(
+          `Python service request failed: ${error.message}. ` +
+            `Retrying (${attempt + 1}/${maxAttempts})...`
+        );
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, retryDelays[attempt - 1])
+        );
+
+        continue;
+      }
+
+      throw error;
+    }
   }
-
-  if (!response.ok) {
-    const error = new Error(body.detail || "Python service error");
-    error.status = response.status;
-    throw error;
-  }
-
-  return body;
 }
 
 app.get("/api/health", async (req, res) => {
   try {
     const python = await pythonRequest("/health");
+
     res.json({
       status: "ok",
       service: "node-api",
@@ -61,6 +124,7 @@ app.get("/api/health", async (req, res) => {
 app.get("/api/data", async (req, res) => {
   try {
     const data = await pythonRequest("/data");
+
     res.json(data);
   } catch (error) {
     res.status(error.status || 502).json({
