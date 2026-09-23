@@ -12,9 +12,28 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("Connecting…");
 
+  // Prevent multiple polling requests from running at the same time.
+  const requestInProgress = useRef(false);
+
   const loadData = useCallback(async () => {
+    // If the previous request is still running, don't start another one.
+    if (requestInProgress.current) {
+      return;
+    }
+
+    requestInProgress.current = true;
+
+    const controller = new AbortController();
+
+    // Prevent a sleeping/unresponsive backend from hanging forever.
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 15000);
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/data`);
+      const response = await fetch(`${API_BASE_URL}/api/data`, {
+        signal: controller.signal,
+      });
 
       let body;
 
@@ -38,7 +57,15 @@ function App() {
       setStatus(`Synced • ${new Date().toLocaleTimeString()}`);
     } catch (error) {
       console.error("Sync error:", error);
-      setStatus(`Sync error: ${error.message}`);
+
+      if (error.name === "AbortError") {
+        setStatus("Sync delayed — retrying…");
+      } else {
+        setStatus(`Sync error: ${error.message}`);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      requestInProgress.current = false;
     }
   }, [editing]);
 
